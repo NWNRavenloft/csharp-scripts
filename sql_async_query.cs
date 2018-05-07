@@ -24,6 +24,7 @@ namespace NWN.Scripts
         {
             public NWN.Object obj;
             public string query;
+            public string values;
             public string callback;
         }
 
@@ -46,8 +47,30 @@ namespace NWN.Scripts
 
             QueryThreadParams t_params = new QueryThreadParams();
             t_params.obj = Object.OBJECT_SELF;
+            Console.WriteLine("Reading query..");
+            Console.Out.Flush();
             t_params.query = NWScript.GetLocalString(Object.OBJECT_SELF, "sql_query") as string;
-            t_params.callback = NWScript.GetLocalString(Object.OBJECT_SELF, "sql_callback") as string;
+            Console.WriteLine("Reading values..");
+            Console.Out.Flush();
+            try 
+            {
+                t_params.values = (NWScript.GetLocalString(Object.OBJECT_SELF, "sql_values") as string);
+            }
+            catch
+            {
+                t_params.values = "";
+            }
+            Console.WriteLine("Reading callback..");
+            Console.Out.Flush();
+            try
+            {
+                t_params.callback = (NWScript.GetLocalString(Object.OBJECT_SELF, "sql_callback") as string);
+            }
+            catch
+            {
+                t_params.callback = "";
+            }
+            Console.Out.Flush();
             query_thread.Start(t_params);
             return 1;
         }
@@ -57,16 +80,43 @@ namespace NWN.Scripts
             QueryThreadParams t_params = (QueryThreadParams)_t_params;
 
             string connectionString =
-              "database=something;" +
-              "user=something;" +
-              "password=something;";
+              "database=potm;" +
+              "user=potm;" +
+              "password=potmtest;";
 
-            IDbConnection dbcon;
+            MySqlConnection dbcon;
             dbcon = new MySqlConnection(connectionString);
             dbcon.Open();
-            IDbCommand dbcmd = dbcon.CreateCommand();
+            MySqlCommand dbcmd = dbcon.CreateCommand();
 
             dbcmd.CommandText = t_params.query;
+            dbcmd.Prepare();
+
+            // Read the values for our query for prepared statement parts
+            int value_i = 1;
+            while (t_params.values.Length > 0)
+            {
+                Console.WriteLine("Values: " + t_params.values);
+                Console.Out.Flush();
+                string param_value = "";
+                Console.WriteLine("Index: " + t_params.values.IndexOf('¦'));
+                Console.Out.Flush();
+                if (t_params.values.IndexOf('¦') >= 0)
+                {
+                    param_value = t_params.values.Substring(0, t_params.values.IndexOf('¦'));
+                    // Remove the value from the values string
+                    t_params.values = t_params.values.Substring(t_params.values.IndexOf('¦') + 1); 
+                }
+                else
+                {
+                    param_value = t_params.values;
+                    t_params.values = "";
+                }
+                Console.WriteLine("Value: " + param_value);
+                Console.Out.Flush();
+                dbcmd.Parameters.AddWithValue("@" + value_i.ToString(), param_value);
+                value_i++;
+            }
 
             List<string> result_list = new List<string>();
 
@@ -77,7 +127,7 @@ namespace NWN.Scripts
                 {
                     column_result += reader[i];
                     if (i+1 < reader.FieldCount)
-                        column_result += "|";
+                        column_result += "¦";
                 }
                 result_list.Add(column_result);
             }
