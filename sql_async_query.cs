@@ -15,20 +15,25 @@ namespace NWN.Scripts
 
         struct QueryResult
         {
-            public NWN.Object obj;
+            public NWN.Object db_object;
             public string[] results;
-            public string callback;
+            public string callback_script;
+            public NWN.Object callback_object;
+            public string metadata;
         }
 
         public class QueryThreadParams
         {
-            public NWN.Object obj;
+            public NWN.Object db_object;
             public string query;
             public string values;
-            public string callback;
+            public string callback_script;
+            public NWN.Object callback_object;
+            public string metadata;
         }
 
         static ConcurrentStack<QueryResult> result_stack = new ConcurrentStack<QueryResult>();
+        static ConcurrentStack<QueryThreadParams> query_stack = new ConcurrentStack<QueryThreadParams>();
 
         static public int Main ()
         {
@@ -36,49 +41,59 @@ namespace NWN.Scripts
             {
                 Console.WriteLine("Not initialized yet, adding MainLoopTick callback..");
                 Events.MainLoopTick += CheckQueryResult;
+                Thread query_thread = new Thread(PollQueries);
+                query_thread.IsBackground = true;
+                query_thread.Start();
                 initialized = true;
             }
-            else
-            {
-                Console.WriteLine("Already initialized.");
-            }
-
-            Thread query_thread = new Thread(RunQuery);
 
             QueryThreadParams t_params = new QueryThreadParams();
-            t_params.obj = Object.OBJECT_SELF;
-            Console.WriteLine("Reading query..");
-            Console.Out.Flush();
-            t_params.query = NWScript.GetLocalString(Object.OBJECT_SELF, "sql_query") as string;
-            Console.WriteLine("Reading values..");
-            Console.Out.Flush();
+            t_params.db_object = Object.OBJECT_SELF;
+            t_params.query = NWScript.GetLocalString(t_params.db_object, "sql_query") as string;
             try 
             {
-                t_params.values = (NWScript.GetLocalString(Object.OBJECT_SELF, "sql_values") as string);
+                t_params.values = (NWScript.GetLocalString(t_params.db_object, "sql_values") as string);
             }
             catch
             {
                 t_params.values = "";
             }
-            Console.WriteLine("Reading callback..");
-            Console.Out.Flush();
             try
             {
-                t_params.callback = (NWScript.GetLocalString(Object.OBJECT_SELF, "sql_callback") as string);
+                t_params.callback_script = (NWScript.GetLocalString(t_params.db_object, "sql_callback_script") as string);
+                t_params.callback_object = (NWScript.GetLocalObject(t_params.db_object, "sql_callback_object"));
             }
             catch
             {
-                t_params.callback = "";
+                t_params.callback_script = "";
+                t_params.callback_object = null;
             }
-            Console.Out.Flush();
-            query_thread.Start(t_params);
+            try
+            {
+                t_params.metadata = (NWScript.GetLocalString(t_params.db_object, "sql_metadata") as string);
+            }
+            catch
+            {
+                t_params.metadata = "";
+            }
+            query_stack.Push(t_params);
+            
             return 1;
         }
 
-        static public void RunQuery(object _t_params)
-        {
-            QueryThreadParams t_params = (QueryThreadParams)_t_params;
+        static public void PollQueries()
+        { 
+            while (true)
+            {
+                QueryThreadParams query_params;
+                if (query_stack.TryPop(out query_params))
+                    RunQuery(query_params);
+                Thread.Sleep(1);
+            }
+        }
 
+        static public void RunQuery(QueryThreadParams t_params)
+        {
             string connectionString =
               "database=potm;" +
               "user=potm;" +
@@ -120,9 +135,13 @@ namespace NWN.Scripts
 
             List<string> result_list = new List<string>();
 
+            Console.WriteLine("Executing reader.");
+            Console.Out.Flush();
             IDataReader reader = dbcmd.ExecuteReader();
             while(reader.Read()) {
                 string column_result = "";
+                Console.WriteLine("Reading results: ", reader.FieldCount);
+                Console.Out.Flush();
                 for (int i = 0; i < reader.FieldCount; i++)
                 {
                     column_result += reader[i];
@@ -132,17 +151,26 @@ namespace NWN.Scripts
                 result_list.Add(column_result);
             }
 
+            Console.WriteLine("Pushing results.");
+            Console.Out.Flush();
             QueryResult query_result = new QueryResult();
-            query_result.obj = t_params.obj;
+            query_result.db_object = t_params.db_object;
             query_result.results = result_list.ToArray();
-            query_result.callback = t_params.callback;
+            query_result.callback_script = t_params.callback_script;
+            query_result.callback_object = t_params.callback_object;
+            query_result.metadata = t_params.metadata;
 
             result_stack.Push(query_result);
 
+            Console.WriteLine("Cleaning DB stuff..");
+            Console.Out.Flush();
             dbcmd.Dispose();
             dbcmd = null;
             dbcon.Close();
             dbcon = null;
+
+            Console.WriteLine("Cleaned!");
+            Console.Out.Flush();
         }
 
         static public void CheckQueryResult(ulong frame)
@@ -150,15 +178,19 @@ namespace NWN.Scripts
             QueryResult query_result;
             if (result_stack.TryPop(out query_result))
             {
-                if (query_result.callback.Length <= 0)
+                Console.WriteLine("Have a result!");
+                if (query_result.callback_script.Length <= 0)
                     return;
                 int i = 0;
                 foreach (string result in query_result.results)
                 {
-                    NWScript.SetLocalString(query_result.obj, "sql_result_" + i, result);
+                    NWScript.SetLocalString(query_result.db_object, "sql_result_" + i, result);
                     i++;
                 }
-                NWScript.ExecuteScript(query_result.callback, query_result.obj);
+                NWScript.SetLocalString(query_result.db_object, "sql_metadata", query_result.metadata);
+                Console.WriteLine("Executing callback script " + query_result.callback_script);
+                Console.Out.Flush();
+                NWScript.ExecuteScript(query_result.callback_script, query_result.callback_object);
             }
         }
     }
