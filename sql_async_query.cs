@@ -12,6 +12,10 @@ namespace NWN.Scripts
     public class sql_async_query
     {
         static bool initialized = false;
+        
+        static string db_name;
+        static string db_user;
+        static string db_pass;
 
         struct QueryResult
         {
@@ -45,6 +49,12 @@ namespace NWN.Scripts
                 query_thread.IsBackground = true;
                 query_thread.Start();
                 initialized = true;
+                
+                // Read database variables from env
+                db_name = Environment.GetEnvironmentVariable("NWNX_CSHARP_DB");
+                db_user = Environment.GetEnvironmentVariable("NWNX_CSHARP_DB_USER");
+                db_pass = Environment.GetEnvironmentVariable("NWNX_CSHARP_DB_PASS");
+                Console.WriteLine("db_name: " + db_name);
             }
 
             QueryThreadParams t_params = new QueryThreadParams();
@@ -95,27 +105,37 @@ namespace NWN.Scripts
         static public void RunQuery(QueryThreadParams t_params)
         {
             string connectionString =
-              "database=potm;" +
-              "user=potm;" +
-              "password=potmtest;";
+              "database=" + db_name + ";" +
+              "user=" + db_user + ";" +
+              "password=" + db_pass + ";";
 
             MySqlConnection dbcon;
-            dbcon = new MySqlConnection(connectionString);
-            dbcon.Open();
-            MySqlCommand dbcmd = dbcon.CreateCommand();
+            MySqlCommand dbcmd;
+            
+            Console.WriteLine(connectionString);
+            
+            try
+            {
+                dbcon = new MySqlConnection(connectionString);
+                dbcon.Open();
+                dbcmd = dbcon.CreateCommand();
 
-            dbcmd.CommandText = t_params.query;
-            dbcmd.Prepare();
-
+                dbcmd.CommandText = t_params.query;
+                dbcmd.Prepare();
+            }
+            catch(Exception e)
+            {
+                Console.WriteLine(e);
+                Console.WriteLine("Error: Could not create DB connection; Returning.");
+                Console.Out.Flush();
+                return;
+            }
+            
             // Read the values for our query for prepared statement parts
             int value_i = 1;
             while (t_params.values.Length > 0)
             {
-                Console.WriteLine("Values: " + t_params.values);
-                Console.Out.Flush();
                 string param_value = "";
-                Console.WriteLine("Index: " + t_params.values.IndexOf('¦'));
-                Console.Out.Flush();
                 if (t_params.values.IndexOf('¦') >= 0)
                 {
                     param_value = t_params.values.Substring(0, t_params.values.IndexOf('¦'));
@@ -127,32 +147,46 @@ namespace NWN.Scripts
                     param_value = t_params.values;
                     t_params.values = "";
                 }
-                Console.WriteLine("Value: " + param_value);
-                Console.Out.Flush();
                 dbcmd.Parameters.AddWithValue("@" + value_i.ToString(), param_value);
                 value_i++;
             }
 
             List<string> result_list = new List<string>();
-
-            Console.WriteLine("Executing reader.");
-            Console.Out.Flush();
-            IDataReader reader = dbcmd.ExecuteReader();
-            while(reader.Read()) {
-                string column_result = "";
-                Console.WriteLine("Reading results: ", reader.FieldCount);
-                Console.Out.Flush();
-                for (int i = 0; i < reader.FieldCount; i++)
-                {
-                    column_result += reader[i];
-                    if (i+1 < reader.FieldCount)
-                        column_result += "¦";
+            
+            try
+            {
+                IDataReader reader = dbcmd.ExecuteReader();
+                while(reader.Read()) {
+                    string column_result = "";
+                    for (int i = 0; i < reader.FieldCount; i++)
+                    {
+                        column_result += reader[i];
+                        if (i+1 < reader.FieldCount)
+                            column_result += "¦";
+                    }
+                    result_list.Add(column_result);
                 }
-                result_list.Add(column_result);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+                Console.WriteLine("Error: Could not execute reader! Cleaning up..");
+                try
+                {
+                    dbcmd.Dispose();
+                    dbcmd = null;
+                    dbcon.Close();
+                    dbcon = null;
+                }
+                catch (Exception ee)
+                {
+                    Console.WriteLine(ee);
+                    Console.WriteLine("Error: We could not clean up!");
+                }
+                Console.Out.Flush();
+                return;
             }
 
-            Console.WriteLine("Pushing results.");
-            Console.Out.Flush();
             QueryResult query_result = new QueryResult();
             query_result.db_object = t_params.db_object;
             query_result.results = result_list.ToArray();
@@ -162,36 +196,36 @@ namespace NWN.Scripts
 
             result_stack.Push(query_result);
 
-            Console.WriteLine("Cleaning DB stuff..");
-            Console.Out.Flush();
             dbcmd.Dispose();
             dbcmd = null;
             dbcon.Close();
             dbcon = null;
-
-            Console.WriteLine("Cleaned!");
-            Console.Out.Flush();
         }
 
         static public void CheckQueryResult(ulong frame)
         {
-            QueryResult query_result;
-            if (result_stack.TryPop(out query_result))
+            try
             {
-                Console.WriteLine("Have a result!");
-                if (query_result.callback_script.Length <= 0)
-                    return;
-                int i = 0;
-                foreach (string result in query_result.results)
+                QueryResult query_result;
+                if (result_stack.TryPop(out query_result))
                 {
-                    NWScript.SetLocalString(query_result.db_object, "sql_result_" + i, result);
-                    i++;
+                    if (query_result.callback_script.Length <= 0)
+                        return;
+                    int i = 0;
+                    foreach (string result in query_result.results)
+                    {
+                        NWScript.SetLocalString(query_result.db_object, "sql_result_" + i, result);
+                        i++;
+                    }
+                    NWScript.SetLocalString(query_result.db_object, "sql_metadata", query_result.metadata);
+                    NWScript.ExecuteScript(query_result.callback_script, query_result.callback_object);
                 }
-                NWScript.SetLocalString(query_result.db_object, "sql_metadata", query_result.metadata);
-                Console.WriteLine("Executing callback script " + query_result.callback_script);
-                Console.Out.Flush();
-                NWScript.ExecuteScript(query_result.callback_script, query_result.callback_object);
             }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+                Console.WriteLine("Error: Could not parse DB results!");
+            }	
         }
     }
 }
